@@ -1,6 +1,5 @@
 import json
 import os
-import sqlite3
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
@@ -71,7 +70,10 @@ def create_handler(service, rules, static_dir):
                 status = 400
             else:
                 status = 500
-            self._send(status, {"error": str(exc), "type": type(exc).__name__})
+            payload = {"error": str(exc), "type": type(exc).__name__}
+            if getattr(exc, "details", None):
+                payload["details"] = exc.details
+            self._send(status, payload)
 
         def do_GET(self):
             try:
@@ -85,6 +87,25 @@ def create_handler(service, rules, static_dir):
                         return self._send_html(200, handle.read())
                 if parts == ["api", "audit"]:
                     return self._send(200, {"items": service.audit_log()})
+                if (
+                    len(parts) == 4
+                    and parts[0] == "api"
+                    and parts[1] in {"events", "event"}
+                    and parts[3] == "revisions"
+                ):
+                    query = parse_qs(parsed.query)
+                    status_filter = query.get("status", [None])[0]
+                    return self._send(
+                        200,
+                        {"items": service.revisions(event_id=parts[2], status=status_filter)},
+                    )
+                if (
+                    len(parts) == 4
+                    and parts[0] == "api"
+                    and parts[1] in {"events", "event"}
+                    and parts[3] == "history"
+                ):
+                    return self._send(200, service.history(parts[2]))
                 if len(parts) == 3 and parts[:2] == ["api", "entities"]:
                     return self._send(200, service.get(parts[2]))
                 if len(parts) >= 2 and parts[0] == "api":
@@ -107,6 +128,20 @@ def create_handler(service, rules, static_dir):
                 parsed = urlparse(self.path)
                 parts = [part for part in parsed.path.split("/") if part]
                 actor = self._actor()
+                if (
+                    len(parts) == 4
+                    and parts[0] == "api"
+                    and parts[1] in {"events", "event"}
+                    and parts[3] == "revisions"
+                ):
+                    body = self._body()
+                    revision = service.submit_revision(
+                        actor,
+                        parts[2],
+                        body.pop("data", body),
+                        body.pop("expected_version", body.pop("expected_event_version", None)),
+                    )
+                    return self._send(201, revision)
                 if len(parts) == 3 and parts[:2] == ["api", "entities"]:
                     body = self._body()
                     action = body.pop("action", None)

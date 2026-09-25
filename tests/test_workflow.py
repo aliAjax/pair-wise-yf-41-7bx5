@@ -32,7 +32,35 @@ class WorkflowTest(unittest.TestCase):
 
     def test_full_workflow(self):
         created = {}
-        steps = [{'op': 'create', 'as': 'station', 'kind': 'station', 'data': {'code': 'STA-1', 'lat': 35.0, 'lon': 110.0}}, {'op': 'create', 'as': 'event', 'kind': 'event', 'data': {'title': 'Event-A', 'origin_time': '2026-01-01T00:00:00Z', 'location': 'Region-A', 'reports': [{'station': 'STA-1', 'time_offset': 2, 'distance_km': 1.0}, {'station': 'STA-2', 'time_offset': -1, 'distance_km': 1.5}]}}, {'op': 'transition', 'target': 'event', 'action': 'associate', 'data': {}, 'expect': 'associated'}, {'op': 'transition', 'target': 'event', 'action': 'review', 'data': {'reviewer': 'R-1', 'magnitude': 4.2}, 'expect': 'reviewed'}, {'op': 'transition', 'target': 'event', 'action': 'publish', 'data': {'communication_id': 'C-1'}, 'expect': 'published'}, {'op': 'transition', 'target': 'event', 'action': 'revise', 'data': {'reason': 'new station data', 'magnitude': 4.3}, 'expect': 'revised'}]
+        steps = [
+            {
+                'op': 'create', 'as': 'station', 'kind': 'station',
+                'data': {'code': 'STA-1', 'lat': 35.0, 'lon': 110.0},
+            },
+            {
+                'op': 'create', 'as': 'event', 'kind': 'event',
+                'data': {
+                    'title': 'Event-A', 'origin_time': '2026-01-01T00:00:00Z',
+                    'location': 'Region-A',
+                    'reports': [
+                        {'station': 'STA-1', 'time_offset': 2, 'distance_km': 1.0},
+                        {'station': 'STA-2', 'time_offset': -1, 'distance_km': 1.5},
+                    ],
+                },
+            },
+            {'op': 'transition', 'target': 'event', 'action': 'associate', 'data': {}, 'expect': 'associated'},
+            {'op': 'transition', 'target': 'event', 'action': 'review', 'data': {'reviewer': 'R-1', 'magnitude': 4.2}, 'expect': 'reviewed'},
+            {'op': 'transition', 'target': 'event', 'action': 'publish', 'data': {'communication_id': 'C-1'}, 'expect': 'published'},
+            {
+                'op': 'transition', 'target': 'event', 'save_as': 'draft', 'action': 'revise',
+                'data': {
+                    'reason': 'new station data',
+                    'added_reports': [{'station': 'STA-3', 'time_offset': 0, 'distance_km': 1.2}],
+                    'magnitude': 4.3,
+                },
+                'expect': 'pending_review',
+            },
+        ]
         for step in steps:
             if step["op"] == "create":
                 entity = self.service.create(
@@ -52,6 +80,21 @@ class WorkflowTest(unittest.TestCase):
                 )
             if "expect" in step:
                 self.assertEqual(entity["status"], step["expect"])
+            if "save_as" in step:
+                created[step["save_as"]] = entity["id"]
+
+        approved = self.service.transition(
+            Actor("reviewer-1", "reviewer"),
+            created["draft"],
+            "approve",
+            {"magnitude": 4.3, "review_result": "updated"},
+        )
+        self.assertEqual(approved["status"], "approved")
+        published = self.service.get(created["event"])
+        self.assertEqual(published["status"], "revised")
+        self.assertEqual(published["version"], 5)
+        self.assertEqual(published["data"]["magnitude"], 4.3)
+        self.assertEqual(len(published["data"]["reports"]), 3)
 
 
 if __name__ == "__main__":
