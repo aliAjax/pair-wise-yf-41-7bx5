@@ -54,6 +54,18 @@ class SQLiteRepository:
                     created_at TEXT NOT NULL,
                     PRIMARY KEY(actor_id, idem_key)
                 );
+                CREATE TABLE IF NOT EXISTS entity_history (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    entity_id TEXT NOT NULL,
+                    version INTEGER NOT NULL,
+                    status TEXT NOT NULL,
+                    data TEXT NOT NULL,
+                    actor_id TEXT NOT NULL,
+                    revision_id TEXT,
+                    created_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_entity_history_entity
+                    ON entity_history(entity_id, id);
             """)
 
     @staticmethod
@@ -175,6 +187,42 @@ class SQLiteRepository:
                 "from_status": row["from_status"],
                 "to_status": row["to_status"],
                 "detail": json.loads(row["detail"]),
+                "created_at": row["created_at"],
+            }
+            for row in rows
+        ]
+
+    def save_entity_version(self, entity_id, version, status, data, actor_id, revision_id=None):
+        with self._connect() as connection:
+            connection.execute(
+                "INSERT INTO entity_history(entity_id, version, status, data, actor_id, revision_id, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (
+                    entity_id,
+                    int(version),
+                    status,
+                    json.dumps(data, ensure_ascii=False, sort_keys=True),
+                    actor_id,
+                    revision_id,
+                    utcnow(),
+                ),
+            )
+
+    def list_entity_history(self, entity_id):
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT * FROM entity_history WHERE entity_id = ? ORDER BY id",
+                (entity_id,),
+            ).fetchall()
+        return [
+            {
+                "id": row["id"],
+                "entity_id": row["entity_id"],
+                "version": int(row["version"]),
+                "status": row["status"],
+                "data": json.loads(row["data"]),
+                "actor_id": row["actor_id"],
+                "revision_id": row["revision_id"],
                 "created_at": row["created_at"],
             }
             for row in rows

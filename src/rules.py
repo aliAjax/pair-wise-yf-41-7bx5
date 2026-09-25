@@ -28,6 +28,48 @@ def _validate_associate(actor, entity, data, lookup):
     return {"associated_count": len(reports)}
 
 
+def _validate_revision(actor, data, lookup):
+    event_id = data.get("event_id")
+    event = _find_one(lookup, "event", "id", event_id)
+    if not event:
+        raise ValidationError("event not found: " + str(event_id))
+    if event["status"] not in ("published", "revised"):
+        raise ValidationError(
+            "revision drafts require a published event, found status %s" % event["status"]
+        )
+    active = _open_revisions(lookup, event_id)
+    if active:
+        raise ConflictError(
+            "event already has an open revision draft: " + active[0]["id"]
+        )
+
+
+def _validate_revision_submit(actor, entity, data, lookup):
+    reports = entity["data"].get("reports") or []
+    if not reports:
+        raise ValidationError("revision needs new station reports before review")
+    if entity["data"].get("magnitude") in (None, ""):
+        raise ValidationError("revision needs a reviewed magnitude before review")
+    active = _open_revisions(
+        lookup, entity["data"].get("event_id"), exclude_id=entity["id"]
+    )
+    if active:
+        raise ConflictError(
+            "event already has an open revision draft: " + active[0]["id"]
+        )
+    return {"submitted_by": actor.user_id}
+
+
+def _validate_revision_approve(actor, entity, data, lookup):
+    event_id = entity["data"].get("event_id")
+    event = _find_one(lookup, "event", "id", event_id)
+    if not event:
+        raise ValidationError("event not found: " + str(event_id))
+    if event["status"] not in ("published", "revised"):
+        raise InvalidTransition("event %s is no longer published" % event_id)
+    return {"reviewer": actor.user_id}
+
+
 def associate_reports(reports, max_delta=120, max_distance=3.0):
     if not reports:
         return []
@@ -49,18 +91,18 @@ def magnitude_median(amplitudes):
     return (values[middle - 1] + values[middle]) / 2.0
 
 
-CUSTOM_CREATE = {'station': _validate_station, 'event': _validate_event}
-CUSTOM_TRANSITIONS = {('event', 'associate'): _validate_associate}
+CUSTOM_CREATE = {'station': _validate_station, 'event': _validate_event, 'revision': _validate_revision}
+CUSTOM_TRANSITIONS = {('event', 'associate'): _validate_associate, ('revision', 'submit'): _validate_revision_submit, ('revision', 'approve'): _validate_revision_approve}
 
 
 class RuleEngine:
-    ALIASES = {'stations': 'station', 'events': 'event'}
-    INITIAL_STATUS = {'station': 'online', 'event': 'candidate'}
-    TRANSITIONS = {'station': {'offline': (('online',), 'offline'), 'online': (('offline',), 'online')}, 'event': {'associate': (('candidate',), 'associated'), 'review': (('associated',), 'reviewed'), 'publish': (('reviewed',), 'published'), 'revise': (('published', 'revised'), 'revised'), 'withdraw': (('published', 'revised'), 'withdrawn')}}
-    CREATE_REQUIRED = {'station': ('code', 'lat', 'lon'), 'event': ('title', 'origin_time', 'location', 'reports')}
-    ACTION_REQUIRED = {('station', 'offline'): ('reason',), ('event', 'review'): ('reviewer', 'magnitude'), ('event', 'publish'): ('communication_id',), ('event', 'revise'): ('reason', 'magnitude'), ('event', 'withdraw'): ('reason',)}
-    CREATE_ROLES = {'station': ('admin', 'station'), 'event': ('admin', 'analyst')}
-    ROLE_ACTIONS = {'offline': ('admin', 'station'), 'online': ('admin', 'station'), 'associate': ('admin', 'analyst'), 'review': ('admin', 'reviewer'), 'publish': ('admin', 'reviewer'), 'revise': ('admin', 'reviewer'), 'withdraw': ('admin', 'reviewer')}
+    ALIASES = {'stations': 'station', 'events': 'event', 'revisions': 'revision'}
+    INITIAL_STATUS = {'station': 'online', 'event': 'candidate', 'revision': 'draft'}
+    TRANSITIONS = {'station': {'offline': (('online',), 'offline'), 'online': (('offline',), 'online')}, 'event': {'associate': (('candidate',), 'associated'), 'review': (('associated',), 'reviewed'), 'publish': (('reviewed',), 'published'), 'revise': (('published', 'revised'), 'revised'), 'withdraw': (('published', 'revised'), 'withdrawn')}, 'revision': {'submit': (('draft',), 'pending'), 'approve': (('pending',), 'applied'), 'reject': (('pending',), 'rejected')}}
+    CREATE_REQUIRED = {'station': ('code', 'lat', 'lon'), 'event': ('title', 'origin_time', 'location', 'reports'), 'revision': ('event_id',)}
+    ACTION_REQUIRED = {('station', 'offline'): ('reason',), ('event', 'review'): ('reviewer', 'magnitude'), ('event', 'publish'): ('communication_id',), ('event', 'revise'): ('reason', 'magnitude'), ('event', 'withdraw'): ('reason',), ('revision', 'reject'): ('reason',)}
+    CREATE_ROLES = {'station': ('admin', 'station'), 'event': ('admin', 'analyst'), 'revision': ('admin', 'analyst')}
+    ROLE_ACTIONS = {'offline': ('admin', 'station'), 'online': ('admin', 'station'), 'associate': ('admin', 'analyst'), 'review': ('admin', 'reviewer'), 'publish': ('admin', 'reviewer'), 'revise': ('admin', 'reviewer'), 'withdraw': ('admin', 'reviewer'), ('revision', 'submit'): ('admin', 'analyst'), ('revision', 'approve'): ('admin', 'reviewer'), ('revision', 'reject'): ('admin', 'reviewer')}
 
     def normalize_kind(self, kind):
         return self.ALIASES.get(kind, kind)
@@ -122,6 +164,17 @@ def _find_one(lookup, kind, field, value):
         return None
     rows = lookup(kind, field, value) or []
     return rows[0] if rows else None
+
+
+def _open_revisions(lookup, event_id, exclude_id=None):
+    if lookup is None or not event_id:
+        return []
+    rows = lookup("revision", "event_id", event_id) or []
+    return [
+        row
+        for row in rows
+        if row["status"] in ("draft", "pending") and row["id"] != exclude_id
+    ]
 
 
 def _date_ordinal(value):

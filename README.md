@@ -25,6 +25,15 @@ python3 app.py --db ./data.db --port 8307
 ## 核心对象
 
 - `station`：观测台站；`event`：地震事件及其多个修订版本。
+- `revision`：已发布事件的修订草案，状态流为`draft → pending → applied/rejected`。
+
+## 修订草案流程
+
+1. 分析员对`published`/`revised`状态的事件创建草案：`POST /api/revisions`，请求体带`event_id`（沿用原事件编号）、`reason`、`magnitude`（震级复核结果）和`reports`（新增报告）。
+2. 同一事件同一时间只允许一个未结草案；重复提交返回409，错误信息中带当前草案编号。
+3. 提交复核：`POST /api/entities/<草案id>/actions`，`action=submit`。没有新增报告或缺少复核震级的草案不能进入复核。
+4. 复核员`approve`后，新增报告与复核震级才合并进事件（事件编号不变，版本号递增，状态变为`revised`）；`reject`（需`reason`）则草案作废，可重新创建。
+5. 旧版本快照和两次处理人（提交的分析员、复核通过的复核员）可通过`GET /api/entities/<事件id>/history`查询。
 
 ## 主要接口
 
@@ -33,7 +42,8 @@ python3 app.py --db ./data.db --port 8307
 - `POST /api/<kind>`：创建对象；请求体为JSON。
 - `GET /api/entities/<id>`：读取对象当前版本。
 - `POST /api/entities/<id>/actions`：提交`{"action":"动作名","data":{...},"expected_version":数字}`。
-- `GET /api/audit`：读取审计记录。
+- `GET /api/entities/<id>/history`：读取历史版本快照和处理记录。
+- `GET /api/audit`：读取审计记录，可用`?entity_id=`过滤。
 
 请求身份通过`X-User-Id`和`X-Role`请求头传入。创建和动作的可执行角色由规则引擎控制。
 
